@@ -1,0 +1,40 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TCGLooker.API", "TCGLooker.API\TCGLooker.API.csproj", "{2E4DEAAB-BB88-4E3D-8813-4428BBAA8574}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TCGLooker.Infra", "TCGLooker.Infra\TCGLooker.Infra.csproj", "{4A7D8696-2081-4F7A-8EE8-25E952FCDAA1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TCGLooker.Domain", "TCGLooker.Domain\TCGLooker.Domain.csproj", "{4881DA7A-68D7-47D2-BE05-03193A228BC3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TCGLooker.Application", "TCGLooker.Application\TCGLooker.Application.csproj", "{01E46AFA-6DDE-47DB-AECD-788272848CDE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TCGLooker.Worker", "TCGLooker.Worker\TCGLooker.Worker.csproj", "{20F8F21A-95E9-42BC-9F56-77C5DBE0941A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2E4DEAAB-BB88-4E3D-8813-4428BBAA8574}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2E4DEAAB-BB88-4E3D-8813-4428BBAA8574}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2E4DEAAB-BB88-4E3D-8813-4428BBAA8574}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2E4DEAAB-BB88-4E3D-8813-4428BBAA8574}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4A7D8696-2081-4F7A-8EE8-25E952FCDAA1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4A7D8696-2081-4F7A-8EE8-25E952FCDAA1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4A7D8696-2081-4F7A-8EE8-25E952FCDAA1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4A7D8696-2081-4F7A-8EE8-25E952FCDAA1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4881DA7A-68D7-47D2-BE05-03193A228BC3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4881DA7A-68D7-47D2-BE05-03193A228BC3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4881DA7A-68D7-47D2-BE05-03193A228BC3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4881DA7A-68D7-47D2-BE05-03193A228BC3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{01E46AFA-6DDE-47DB-AECD-788272848CDE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{01E46AFA-6DDE-47DB-AECD-788272848CDE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{01E46AFA-6DDE-47DB-AECD-788272848CDE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{01E46AFA-6DDE-47DB-AECD-788272848CDE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{20F8F21A-95E9-42BC-9F56-77C5DBE0941A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{20F8F21A-95E9-42BC-9F56-77C5DBE0941A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{20F8F21A-95E9-42BC-9F56-77C5DBE0941A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{20F8F21A-95E9-42BC-9F56-77C5DBE0941A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
