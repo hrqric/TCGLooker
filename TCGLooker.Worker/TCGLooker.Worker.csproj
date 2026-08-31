@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>TCGLooker.Worker</RootNamespace>
+    <UserSecretsId>e06c7eaf-e101-4cdd-8d31-80e9bc229b66</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>

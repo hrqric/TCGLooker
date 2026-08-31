@@ -23,8 +23,15 @@ public sealed record CardSearchResult(
 public sealed record ListingSummary(
     Guid ListingId,
     string Store,
+    string Set,
+    string? CollectorNumber,
+    string Language,
+    string Finish,
+    string? Variant,
+    string Condition,
     decimal Price,
     string Currency,
+    int? Quantity,
     string Availability,
     Uri Url,
     DateTimeOffset ObservedAt);

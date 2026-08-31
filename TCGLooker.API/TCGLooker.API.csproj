@@ -4,8 +4,9 @@
         <TargetFramework>net10.0</TargetFramework>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
-        <RootNamespace>TCGLooker.Api</RootNamespace>
-        <AssemblyName>TCGLooker.Api</AssemblyName>
+        <RootNamespace>TCGLooker.API</RootNamespace>
+        <AssemblyName>TCGLooker.API</AssemblyName>
+        <UserSecretsId>e06c7eaf-e101-4cdd-8d31-80e9bc229b66</UserSecretsId>
     </PropertyGroup>
 
     <ItemGroup>

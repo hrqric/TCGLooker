@@ -8,18 +8,31 @@ public interface IStoreConnector
     string Key { get; }
 
     Task<ScrapePage> FetchAsync(
-        ScrapeCursor? cursor,
+        ScrapeRequest request,
         CancellationToken cancellationToken = default);
 }
 
-public sealed record ScrapeCursor(string Value);
+public enum ScrapeMode
+{
+    Incremental,
+    Full
+}
+
+public sealed record ScrapeRequest(ScrapeMode Mode, int Page = 1);
 
 public sealed record ScrapePage(
     IReadOnlyCollection<ExternalListing> Listings,
-    ScrapeCursor? NextCursor);
+    int? NextPage);
 
 public sealed record ExternalListing(
     string ExternalId,
+    string CardName,
+    string SetExternalCode,
+    string SetName,
+    string? CollectorNumber,
+    string Language,
+    CardFinish Finish,
+    string? Variant,
     string Title,
     Uri Url,
     Money Price,

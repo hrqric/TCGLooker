@@ -10,6 +10,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TCGLooker.Application", "TC
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TCGLooker.Worker", "TCGLooker.Worker\TCGLooker.Worker.csproj", "{20F8F21A-95E9-42BC-9F56-77C5DBE0941A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TCGLooker.Infra.Tests", "TCGLooker.Infra.Tests\TCGLooker.Infra.Tests.csproj", "{73A6D55B-811C-4D49-AF4C-53F43BA1A561}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -36,5 +38,9 @@ Global
 		{20F8F21A-95E9-42BC-9F56-77C5DBE0941A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{20F8F21A-95E9-42BC-9F56-77C5DBE0941A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{20F8F21A-95E9-42BC-9F56-77C5DBE0941A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{73A6D55B-811C-4D49-AF4C-53F43BA1A561}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{73A6D55B-811C-4D49-AF4C-53F43BA1A561}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{73A6D55B-811C-4D49-AF4C-53F43BA1A561}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{73A6D55B-811C-4D49-AF4C-53F43BA1A561}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
