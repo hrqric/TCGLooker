@@ -27,9 +27,15 @@ public sealed class ScrapeRun
         Status = ScrapeRunStatus.Succeeded;
     }
 
-    public void Fail(string errorCode, DateTimeOffset finishedAt)
+    public void Fail(
+        string errorCode,
+        int itemsSeen,
+        int itemsChanged,
+        DateTimeOffset finishedAt)
     {
         ErrorCode = errorCode;
+        ItemsSeen = itemsSeen;
+        ItemsChanged = itemsChanged;
         FinishedAt = finishedAt;
         Status = ScrapeRunStatus.Failed;
     }

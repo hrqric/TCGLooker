@@ -9,3 +9,4 @@ riderModule.iml
 !.env.example
 *.user
 *.suo
+scraping-cooldowns.json*

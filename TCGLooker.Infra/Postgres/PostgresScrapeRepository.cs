@@ -9,28 +9,76 @@ namespace TCGLooker.Infra.Postgres;
 
 internal sealed class PostgresScrapeRepository(PostgresConnectionFactory connectionFactory) : IScrapeRepository
 {
+    public async Task<IAsyncDisposable?> TryAcquireStoreLeaseAsync(
+        Guid storeId,
+        CancellationToken cancellationToken = default)
+    {
+        var connection = await connectionFactory.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            await using var command = new NpgsqlCommand(
+                "select pg_try_advisory_lock(hashtext('tcglooker:scrape'), hashtext(@store_id))",
+                connection);
+            command.Parameters.AddWithValue("store_id", storeId.ToString("D"));
+            var acquired = (bool)(await command.ExecuteScalarAsync(cancellationToken))!;
+            if (!acquired)
+            {
+                await connection.DisposeAsync();
+                return null;
+            }
+
+            return new PostgresStoreLease(connection, storeId);
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
+    }
+
     public async Task<ScrapeExecution> StartAsync(
-        string storeKey,
+        Guid storeId,
         ScrapeMode mode,
+        DateTimeOffset startedAt,
         CancellationToken cancellationToken = default)
     {
         var runId = Guid.NewGuid();
         await using var connection = await connectionFactory.OpenConnectionAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""
             insert into tcglooker.scrape_run (id, store_id, started_at, status, mode)
-            select @run_id, id, now(), 'running', @mode
+            select @run_id, id, @started_at, 'running', @mode
             from tcglooker.store
-            where connector_key = @store_key and is_enabled
+            where id = @store_id and is_enabled
             returning store_id
             """, connection);
         command.Parameters.AddWithValue("run_id", runId);
-        command.Parameters.AddWithValue("store_key", storeKey);
+        command.Parameters.AddWithValue("store_id", storeId);
+        command.Parameters.AddWithValue("started_at", startedAt);
         command.Parameters.AddWithValue("mode", ToDatabase(mode));
 
         var result = await command.ExecuteScalarAsync(cancellationToken);
-        if (result is not Guid storeId)
-            throw new InvalidOperationException($"Enabled store '{storeKey}' was not found.");
-        return new ScrapeExecution(runId, storeId, mode);
+        if (result is not Guid returnedStoreId)
+            throw new InvalidOperationException($"Enabled store '{storeId}' was not found.");
+        return new ScrapeExecution(runId, returnedStoreId, mode);
+    }
+
+    private sealed class PostgresStoreLease(NpgsqlConnection connection, Guid storeId) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                await using var command = new NpgsqlCommand(
+                    "select pg_advisory_unlock(hashtext('tcglooker:scrape'), hashtext(@store_id))",
+                    connection);
+                command.Parameters.AddWithValue("store_id", storeId.ToString("D"));
+                await command.ExecuteScalarAsync(CancellationToken.None);
+            }
+            finally
+            {
+                await connection.DisposeAsync();
+            }
+        }
     }
 
     public async Task<int> UpsertAvailableAsync(
@@ -139,17 +187,25 @@ internal sealed class PostgresScrapeRepository(PostgresConnectionFactory connect
     public async Task FailAsync(
         ScrapeExecution execution,
         string errorCode,
+        int itemsSeen,
+        int itemsChanged,
         DateTimeOffset finishedAt,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await connectionFactory.OpenConnectionAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""
             update tcglooker.scrape_run
-            set finished_at = @finished_at, status = 'failed', error_code = @error_code
+            set finished_at = @finished_at,
+                status = 'failed',
+                error_code = @error_code,
+                items_seen = @items_seen,
+                items_changed = @items_changed
             where id = @run_id and status = 'running'
             """, connection);
         command.Parameters.AddWithValue("finished_at", finishedAt);
         command.Parameters.AddWithValue("error_code", errorCode[..Math.Min(errorCode.Length, 200)]);
+        command.Parameters.AddWithValue("items_seen", itemsSeen);
+        command.Parameters.AddWithValue("items_changed", itemsChanged);
         command.Parameters.AddWithValue("run_id", execution.RunId);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -289,7 +345,7 @@ internal sealed class PostgresScrapeRepository(PostgresConnectionFactory connect
                         then coalesce(tcglooker.listing.unavailable_since, excluded.last_seen_at)
                     else null
                 end
-            returning 1
+            returning id, availability, availability_version
             """, connection, transaction);
         command.Parameters.AddWithValue("id", Guid.NewGuid());
         command.Parameters.AddWithValue("store_id", execution.StoreId);
@@ -307,7 +363,76 @@ internal sealed class PostgresScrapeRepository(PostgresConnectionFactory connect
         command.Parameters.Add("attributes", NpgsqlDbType.Jsonb).Value = JsonSerializer.Serialize(listing.Attributes);
         command.Parameters.AddWithValue("observed_at", observedAt);
         command.Parameters.AddWithValue("run_id", execution.RunId);
-        return (int)(await command.ExecuteScalarAsync(cancellationToken))!;
+        Guid listingId;
+        string persistedAvailability;
+        long availabilityVersion;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            await reader.ReadAsync(cancellationToken);
+            listingId = reader.GetGuid(0);
+            persistedAvailability = reader.GetString(1);
+            availabilityVersion = reader.GetInt64(2);
+        }
+
+        if (persistedAvailability == "in_stock")
+        {
+            await CreateWishlistMatchEventsAsync(
+                connection,
+                transaction,
+                listingId,
+                availabilityVersion,
+                observedAt,
+                cancellationToken);
+        }
+
+        return 1;
+    }
+
+    private static async Task CreateWishlistMatchEventsAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        Guid listingId,
+        long availabilityVersion,
+        DateTimeOffset observedAt,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("""
+            insert into tcglooker.outbox_message
+                (id, type, payload, occurred_at, idempotency_key)
+            select gen_random_uuid(),
+                   'wishlist.matched',
+                   jsonb_build_object(
+                       'wishlistId', w.id,
+                       'listingId', l.id,
+                       'availabilityVersion', @availability_version,
+                       'storeId', l.store_id,
+                       'priceAmount', l.price_amount,
+                       'currency', l.currency,
+                       'url', l.url),
+                   @observed_at,
+                   concat('wishlist:', w.id, ':listing:', l.id,
+                          ':availability:', @availability_version)
+            from tcglooker.listing l
+            join tcglooker.card_printing p on p.id = l.card_printing_id
+            join tcglooker.store s on s.id = l.store_id
+            join tcglooker.wishlist_item w
+              on w.card_id = p.card_id
+             and (w.card_printing_id is null or w.card_printing_id = p.id)
+            where l.id = @listing_id
+              and l.availability = 'in_stock'
+              and w.is_active
+              and (w.max_price_amount is null
+                   or (w.max_price_currency = l.currency
+                       and l.price_amount <= w.max_price_amount))
+              and tcglooker.condition_rank(l.condition)
+                  >= tcglooker.condition_rank(w.minimum_condition)
+              and (s.scope = 'global' or s.owner_user_id = w.user_id)
+            on conflict (idempotency_key) do nothing
+            """, connection, transaction);
+        command.Parameters.AddWithValue("listing_id", listingId);
+        command.Parameters.AddWithValue("availability_version", availabilityVersion);
+        command.Parameters.AddWithValue("observed_at", observedAt);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static string ToDatabase(ScrapeMode value) => value == ScrapeMode.Full ? "full" : "incremental";

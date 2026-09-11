@@ -12,6 +12,7 @@ public sealed class ScrapeOrchestratorTests
     [Fact]
     public async Task Failed_full_crawl_publishes_available_offers_but_does_not_mark_unavailable()
     {
+        var now = new DateTimeOffset(2026, 9, 1, 15, 30, 0, TimeSpan.Zero);
         var available = Listing("available", 2);
         var unavailable = Listing("unavailable", 0);
         var connector = new FakeConnector(
@@ -20,7 +21,7 @@ public sealed class ScrapeOrchestratorTests
         var repository = new FakeRepository();
         var orchestrator = new ScrapeOrchestrator(
             repository,
-            TimeProvider.System,
+            new FixedTimeProvider(now),
             NullLogger<ScrapeOrchestrator>.Instance);
 
         await Assert.ThrowsAsync<HttpRequestException>(() =>
@@ -29,6 +30,10 @@ public sealed class ScrapeOrchestratorTests
         Assert.Equal(["available"], repository.PublishedExternalIds);
         Assert.False(repository.Completed);
         Assert.True(repository.Failed);
+        Assert.Equal(2, repository.FailedItemsSeen);
+        Assert.Equal(1, repository.FailedItemsChanged);
+        Assert.Equal(now, repository.StartedAt);
+        Assert.Equal(now, repository.FinishedAt);
     }
 
     [Fact]
@@ -69,6 +74,7 @@ public sealed class ScrapeOrchestratorTests
     private sealed class FakeConnector(params object[] pages) : IStoreConnector
     {
         private int _index;
+        public Guid StoreId { get; } = Guid.NewGuid();
         public string Key => "fake";
 
         public Task<ScrapePage> FetchAsync(
@@ -93,11 +99,25 @@ public sealed class ScrapeOrchestratorTests
         public List<string> CompletedUnavailableExternalIds { get; } = [];
         public bool Completed { get; private set; }
         public bool Failed { get; private set; }
+        public int FailedItemsSeen { get; private set; }
+        public int FailedItemsChanged { get; private set; }
+        public DateTimeOffset? StartedAt { get; private set; }
+        public DateTimeOffset? FinishedAt { get; private set; }
+
+        public Task<IAsyncDisposable?> TryAcquireStoreLeaseAsync(
+            Guid storeId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IAsyncDisposable?>(new NoOpLease());
 
         public Task<ScrapeExecution> StartAsync(
-            string storeKey,
+            Guid storeId,
             ScrapeMode mode,
-            CancellationToken cancellationToken = default) => Task.FromResult(_execution);
+            DateTimeOffset startedAt,
+            CancellationToken cancellationToken = default)
+        {
+            StartedAt = startedAt;
+            return Task.FromResult(_execution);
+        }
 
         public Task<int> UpsertAvailableAsync(
             ScrapeExecution execution,
@@ -127,15 +147,30 @@ public sealed class ScrapeOrchestratorTests
         public Task FailAsync(
             ScrapeExecution execution,
             string errorCode,
+            int itemsSeen,
+            int itemsChanged,
             DateTimeOffset finishedAt,
             CancellationToken cancellationToken = default)
         {
             Failed = true;
+            FailedItemsSeen = itemsSeen;
+            FailedItemsChanged = itemsChanged;
+            FinishedAt = finishedAt;
             return Task.CompletedTask;
         }
 
         public Task<int> PurgeUnavailableAsync(
             DateTimeOffset olderThan,
             CancellationToken cancellationToken = default) => Task.FromResult(0);
+
+        private sealed class NoOpLease : IAsyncDisposable
+        {
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

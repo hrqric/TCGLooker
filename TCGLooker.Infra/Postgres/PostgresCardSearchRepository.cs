@@ -1,4 +1,5 @@
 using Npgsql;
+using NpgsqlTypes;
 using TCGLooker.Application.Search;
 using TCGLooker.Infra.Connectors;
 
@@ -11,6 +12,7 @@ internal sealed class PostgresCardSearchRepository(PostgresConnectionFactory con
         string query,
         int page,
         int pageSize,
+        string? externalUserId,
         CancellationToken cancellationToken = default)
     {
         var normalizedQuery = TextNormalizer.Normalize(query);
@@ -25,9 +27,16 @@ internal sealed class PostgresCardSearchRepository(PostgresConnectionFactory con
                   select 1
                   from tcglooker.card_printing cp
                   join tcglooker.listing l on l.card_printing_id = cp.id
-                  where cp.card_id = c.id and l.availability = 'in_stock')
+                  join tcglooker.store s on s.id = l.store_id
+                  left join tcglooker.app_user owner on owner.id = s.owner_user_id
+                  where cp.card_id = c.id
+                    and l.availability = 'in_stock'
+                    and (s.scope = 'global' or owner.external_auth_id = @external_user_id))
             """, connection);
         countCommand.Parameters.AddWithValue("query", normalizedQuery);
+        countCommand.Parameters.Add(
+            new NpgsqlParameter("external_user_id", NpgsqlDbType.Text)
+            { Value = externalUserId ?? (object)DBNull.Value });
         var total = (long)(await countCommand.ExecuteScalarAsync(cancellationToken))!;
 
         await using var command = new NpgsqlCommand("""
@@ -41,7 +50,11 @@ internal sealed class PostgresCardSearchRepository(PostgresConnectionFactory con
                       select 1
                       from tcglooker.card_printing cp
                       join tcglooker.listing l on l.card_printing_id = cp.id
-                      where cp.card_id = c.id and l.availability = 'in_stock')
+                      join tcglooker.store s on s.id = l.store_id
+                      left join tcglooker.app_user owner on owner.id = s.owner_user_id
+                      where cp.card_id = c.id
+                        and l.availability = 'in_stock'
+                        and (s.scope = 'global' or owner.external_auth_id = @external_user_id))
                 order by rank desc, c.canonical_name, c.id
                 limit @page_size offset @offset
             )
@@ -55,12 +68,17 @@ internal sealed class PostgresCardSearchRepository(PostgresConnectionFactory con
             left join tcglooker.card_set cs on cs.id = cp.set_id
             join tcglooker.listing l on l.card_printing_id = cp.id
             join tcglooker.store s on s.id = l.store_id
+            left join tcglooker.app_user owner on owner.id = s.owner_user_id
             where l.availability = 'in_stock'
+              and (s.scope = 'global' or owner.external_auth_id = @external_user_id)
             order by mc.rank desc, mc.canonical_name, l.price_amount, l.id
             """, connection);
         command.Parameters.AddWithValue("query", normalizedQuery);
         command.Parameters.AddWithValue("page_size", pageSize);
         command.Parameters.AddWithValue("offset", (page - 1) * pageSize);
+        command.Parameters.Add(
+            new NpgsqlParameter("external_user_id", NpgsqlDbType.Text)
+            { Value = externalUserId ?? (object)DBNull.Value });
 
         var results = new List<CardSearchResult>();
         var offersByCard = new Dictionary<Guid, List<ListingSummary>>();

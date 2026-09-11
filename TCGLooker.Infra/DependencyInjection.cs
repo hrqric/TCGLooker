@@ -1,7 +1,11 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using TCGLooker.Application.Ingestion;
+using TCGLooker.Application.Identity;
+using TCGLooker.Application.Notifications;
 using TCGLooker.Application.Search;
+using TCGLooker.Application.Stores;
+using TCGLooker.Application.Watchlist;
 using TCGLooker.Infra.Connectors;
 using TCGLooker.Infra.Health;
 using TCGLooker.Infra.Ingestion;
@@ -21,40 +25,33 @@ public static class DependencyInjection
         });
         services.AddSingleton<PostgresConnectionFactory>();
         services.AddSingleton(TimeProvider.System);
+        var scrapingOptions = new ScrapingHttpOptions();
+        configuration.GetSection("Scraping").Bind(scrapingOptions);
+        scrapingOptions.Validate();
+        services.AddSingleton(scrapingOptions);
+        services.AddSingleton<ScrapingRequestCoordinator>();
+        services.AddTransient<ScrapingHttpHandler>();
         services.AddSingleton<LigaMagicPageParser>();
         services.AddSingleton<IScrapeRepository, PostgresScrapeRepository>();
         services.AddSingleton<IScrapeOrchestrator, ScrapeOrchestrator>();
+        services.AddSingleton<IStoreCatalogRepository, PostgresStoreCatalogRepository>();
+        services.AddSingleton<IStoreConnectorFactory, StoreConnectorFactory>();
+        services.AddSingleton<IStoreSiteValidator, StoreSiteValidator>();
         services.AddSingleton<ICardSearchRepository, PostgresCardSearchRepository>();
+        services.AddSingleton<IUserIdentityRepository, PostgresUserIdentityRepository>();
+        services.AddSingleton<IWishlistRepository, PostgresWishlistRepository>();
+        services.AddSingleton<WishlistService>();
+        services.AddSingleton<INotificationOutboxProcessor, PostgresNotificationOutboxProcessor>();
         services.AddHealthChecks()
             .AddCheck<PostgresHealthCheck>("postgres", tags: ["ready"]);
-        services.AddHttpClient(StoreConnectorKeys.CardsHall, client =>
+        services.AddHttpClient(StoreConnectorTypes.LigaMagic, client =>
         {
-            client.BaseAddress = new Uri("https://www.cardshall.com.br");
-            client.Timeout = TimeSpan.FromSeconds(30);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("TCGLooker/0.1");
-        });
-
-        services.AddHttpClient(StoreConnectorKeys.TabletopTcg, client =>
-        {
-            client.BaseAddress = new Uri("https://www.tabletoptcg.com.br");
-            client.Timeout = TimeSpan.FromSeconds(30);
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("TCGLooker/0.1");
-        });
-
-        services.AddSingleton<IStoreConnector>(serviceProvider =>
-            new LigaMagicStoreConnector(
-                StoreConnectorKeys.CardsHall,
-                serviceProvider.GetRequiredService<IHttpClientFactory>(),
-                serviceProvider.GetRequiredService<LigaMagicPageParser>(),
-                serviceProvider.GetRequiredService<TimeProvider>(),
-                serviceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<LigaMagicStoreConnector>>()));
-        services.AddSingleton<IStoreConnector>(serviceProvider =>
-            new LigaMagicStoreConnector(
-                StoreConnectorKeys.TabletopTcg,
-                serviceProvider.GetRequiredService<IHttpClientFactory>(),
-                serviceProvider.GetRequiredService<LigaMagicPageParser>(),
-                serviceProvider.GetRequiredService<TimeProvider>(),
-                serviceProvider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<LigaMagicStoreConnector>>()));
+            // Queue/cooldown waits must not consume the per-request network timeout.
+            client.Timeout = Timeout.InfiniteTimeSpan;
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(scrapingOptions.UserAgent);
+        }).AddHttpMessageHandler<ScrapingHttpHandler>()
+            .ConfigurePrimaryHttpMessageHandler(
+                () => PublicInternetHttpHandler.Create(allowAutoRedirect: false, scrapingOptions.Proxy));
 
         return services;
     }

@@ -13,13 +13,27 @@ internal sealed class ScrapeOrchestrator(
         ScrapeMode mode,
         CancellationToken cancellationToken = default)
     {
-        var execution = await repository.StartAsync(connector.Key, mode, cancellationToken);
+        await using var lease = await repository.TryAcquireStoreLeaseAsync(
+            connector.StoreId, cancellationToken);
+        if (lease is null)
+        {
+            logger.LogInformation(
+                "Scrape for {StoreKey} skipped because another worker owns its lease",
+                connector.Key);
+            return;
+        }
+
+        var execution = await repository.StartAsync(
+            connector.StoreId,
+            mode,
+            timeProvider.GetUtcNow(),
+            cancellationToken);
+        var itemsSeen = 0;
+        var itemsChanged = 0;
 
         try
         {
             var unavailableListings = new List<ExternalListing>();
-            var itemsSeen = 0;
-            var itemsChanged = 0;
             int? page = 1;
             while (page is not null)
             {
@@ -61,7 +75,12 @@ internal sealed class ScrapeOrchestrator(
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             await repository.FailAsync(
-                execution, exception.GetType().Name, timeProvider.GetUtcNow(), CancellationToken.None);
+                execution,
+                exception.GetType().Name,
+                itemsSeen,
+                itemsChanged,
+                timeProvider.GetUtcNow(),
+                CancellationToken.None);
             logger.LogError(exception, "Scrape {Mode} for {StoreKey} failed", mode, connector.Key);
             throw;
         }

@@ -6,6 +6,7 @@ public interface ICardSearchRepository
         string query,
         int page,
         int pageSize,
+        string? externalUserId,
         CancellationToken cancellationToken = default);
 }
 

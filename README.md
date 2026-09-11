@@ -7,17 +7,17 @@ O projeto está na fase de fundação arquitetural. A proposta inicial, o modelo
 ## Princípios da primeira versão
 
 - monólito modular, com API e processamento em segundo plano no mesmo repositório;
-- PostgreSQL hospedado no Supabase como fonte de verdade, sem Supabase Auth no MVP;
+- PostgreSQL e autenticação hospedados no Supabase;
 - Cards Hall e Tabletop TCG como primeiros conectores;
 - cobertura de todas as coleções, idiomas, condições e acabamentos encontrados nas lojas;
-- conectores de lojas explicitamente suportadas, sem scraping de URLs arbitrárias;
+- cadastro autenticado de sites compatíveis com conectores explicitamente suportados;
 - separação entre carta, impressão/variante e oferta de uma loja;
 - coleta idempotente e notificações com deduplicação;
 - Telegram como primeiro canal recomendado; WhatsApp após validar opt-in e templates do provedor.
 
 ## Estado atual
 
-A fundação usa .NET 10 e está separada em API, Worker, Application, Domain e Infra. Os conectores da Cards Hall e da Tabletop TCG coletam cartas Pokémon por HTTP, o Worker persiste as ofertas no PostgreSQL e a API expõe busca somente de ofertas disponíveis.
+A fundação usa .NET 10 e está separada em API, Worker, Application, Domain e Infra. Cada site habilitado no banco recebe um loop de coleta independente, o Worker persiste as ofertas no PostgreSQL e a API filtra sites privados pelo usuário autenticado.
 
 ## Configuração local
 
@@ -25,9 +25,19 @@ API e Worker compartilham o mesmo armazenamento local de User Secrets do .NET. C
 
 ```powershell
 dotnet user-secrets set --project TCGLooker.API "ConnectionStrings:DefaultConnection" "SUA_CONNECTION_STRING"
+dotnet user-secrets set --project TCGLooker.API "Supabase:Authority" "https://SEU_PROJECT_REF.supabase.co/auth/v1"
 ```
 
-O segredo fica fora do repositório e não deve ser colocado em `appsettings.json` ou commitado. Para uma base nova, execute `database/bootstrap.sql`. Para uma base criada pela versão anterior, execute `database/migrations/002_connectors_stock_lifecycle.sql`.
+Para desenvolvimento local sem token ou configuração do Supabase Auth, ative o bypass nos User Secrets:
+
+```powershell
+dotnet user-secrets set --project TCGLooker.API "dev" "true"
+dotnet run --project TCGLooker.API --launch-profile http
+```
+
+Nesse modo, a API usa o usuário local fixo `00000000-0000-0000-0000-000000000001` com permissão administrativa. O bypass somente funciona quando `ASPNETCORE_ENVIRONMENT=Development`; se `dev=true` chegar a outro ambiente, a aplicação recusa a inicialização. A conexão PostgreSQL continua obrigatória para rotas que acessam dados.
+
+O segredo fica fora do repositório e não deve ser colocado em `appsettings.json` ou commitado. Para uma base nova, execute `database/bootstrap.sql`. Para uma base existente, aplique as migrations `002`, `003` e `004` em ordem.
 
 Depois, inicie os dois processos em terminais separados sem definir variáveis:
 
@@ -39,7 +49,79 @@ dotnet run --project TCGLooker.Worker
 dotnet run --project TCGLooker.API --launch-profile http
 ```
 
-Teste a busca em `http://localhost:5204/api/v1/cards/search?q=Charizard`. A primeira varredura é completa e pode demorar, mas ofertas confirmadas em estoque são publicadas ao final de cada página. Depois disso, o Worker consulta novidades a cada 15 minutos e realiza uma reconciliação completa a cada 24 horas.
+Teste a busca em `http://localhost:5204/api/v1/cards/search?q=Charizard`. Por padrão, o início consulta novidades; a reconciliação completa acontece após 24 horas de execução. Para popular todo o catálogo inicialmente, configure `Scraping:RunFullOnStartup=true` nessa execução e depois retorne a `false`. Os loops das lojas compartilham o limite de rede. Cada ciclo aguarda 15 minutos após terminar antes de começar outro.
+
+### Limites e proxy do scraping
+
+API (validação de sites) e Worker usam a mesma política, com um orçamento independente por processo:
+
+| Configuração em `Scraping` | Padrão | Comportamento |
+|---|---|---|
+| `RequestsPerMinute` | 6 | Máximo por domínio, inclusive entre conectores distintos |
+| `GlobalRequestsPerMinute` | 12 | Máximo somando todas as lojas no processo |
+| `JitterMilliseconds` | 500 | Pausa aleatória adicional de 0 a 500 ms |
+| `RequestTimeoutSeconds` | 30 | Tempo de rede por tentativa, incluindo leitura do corpo; exclui fila |
+| `MaxRetries` | 2 | Até duas novas tentativas para falhas transitórias, com espera crescente |
+| `ForbiddenRetryHours` | 24 | Pausa mínima após HTTP 403 |
+| `RateLimitRetryMinutes` | 30 | Pausa mínima após HTTP 429 ou 503 com `Retry-After` |
+| `UserAgent` | `TCGLooker/0.1` | Identificação do coletor; pode incluir contato do responsável |
+
+As requisições são espaçadas, sem rajadas, com somente uma em andamento por processo. Listagens, produtos, tentativas e redirecionamentos consomem o mesmo orçamento. Redirecionamentos são limitados a três e permanecem no domínio original. Falhas de conexão também consomem o limite. Respostas são limitadas a 4 MiB, com validação de HTML de cadastro limitada a 2 MiB.
+
+HTTP 403 e 429 encerram a coleta atual sem repetição imediata. `Retry-After`, tanto em segundos quanto em data HTTP, pode estender a pausa e também é respeitado em HTTP 503. A pausa por domínio fica gravada em `scraping-cooldowns.json` junto ao executável e sobrevive a reinícios; um estado existente ilegível impede requisições. Em containers, configure `Scraping:CooldownStatePath` em volume persistente gravável. Use um arquivo por processo: limites e estado não são coordenados entre API, Worker ou réplicas, e os contadores por minuto recomeçam ao reiniciar. Para compartilhar a mesma saída de rede, divida o orçamento entre processos e prefira uma única instância do Worker.
+
+O proxy é fixo, opcional e desativado por padrão. Configure o endereço e as credenciais fora do repositório, por exemplo nos User Secrets compartilhados:
+
+```powershell
+dotnet user-secrets set --project TCGLooker.API "Scraping:Proxy:Enabled" "true"
+dotnet user-secrets set --project TCGLooker.API "Scraping:Proxy:Url" "http://SEU_PROXY:8080"
+dotnet user-secrets set --project TCGLooker.API "Scraping:Proxy:Username" "SEU_USUARIO"
+dotnet user-secrets set --project TCGLooker.API "Scraping:Proxy:Password" "SUA_SENHA"
+```
+
+São aceitos proxies HTTP/HTTPS; usuário e senha são opcionais e separados da URL. Não há rotação de IP nem saída direta alternativa se o proxy falhar. Com o proxy desativado, o cliente não usa proxies implícitos do sistema. A validação HTTPS/domínio público continua ativa, inclusive antes de cada acesso via proxy; o proxy é uma infraestrutura de confiança e deve também bloquear destinos privados na sua própria resolução DNS e saída de rede.
+
+As mesmas chaves estão exemplificadas em `.env.example`; o .NET não carrega esse arquivo automaticamente. Exporte as variáveis no ambiente ou use User Secrets. Os limites reduzem a carga, mas não garantem ausência de bloqueios. Confira a autorização e os limites de cada loja antes de habilitá-la; esta alteração não implementa leitura automática de `robots.txt`.
+
+### Cadastro de sites
+
+`POST /api/v1/stores` exige o access token emitido pelo Supabase Auth. O proprietário de um site com `scope: "user"` é sempre derivado do claim `sub`; a API não aceita `userId` no payload. Para `scope: "global"`, o JWT precisa conter `app_metadata.tcglooker_role = "admin"`.
+
+Quando o bypass local `dev=true` estiver ativo, o token não é exigido e a identidade administrativa de desenvolvimento é usada automaticamente.
+
+```json
+{
+  "name": "Minha Loja",
+  "slug": "minha-loja",
+  "baseUrl": "https://loja.example",
+  "scope": "user",
+  "connectorType": "liga_magic"
+}
+```
+
+Antes de persistir, a API exige HTTPS público, bloqueia redes internas, credenciais e portas personalizadas, limita redirecionamentos e confirma que a página é compatível com o conector. Os workers repetem a proteção de rede e não seguem links de produtos para outro domínio.
+
+### Wishlist
+
+As rotas usam exclusivamente o claim `sub` do access token para identificar o proprietário:
+
+- `POST /api/v1/me/wishlist` cria uma regra;
+- `GET /api/v1/me/wishlist` lista apenas regras ativas;
+- `GET /api/v1/me/wishlist?includeInactive=true` inclui o histórico desativado;
+- `DELETE /api/v1/me/wishlist/{id}` desativa a regra sem apagar o histórico.
+
+Exemplo de criação:
+
+```json
+{
+  "cardId": "UUID_RETORNADO_PELA_BUSCA",
+  "cardPrintingId": null,
+  "maximumPrice": { "amount": 100.00, "currency": "BRL" },
+  "minimumCondition": "near_mint"
+}
+```
+
+Ofertas já existentes e novos upserts compatíveis geram `wishlist.matched` na outbox. O worker converte esses eventos em entregas para canais habilitados e verificados; adaptadores externos de Telegram/WhatsApp são conectados pela porta `INotificationSender` quando suas credenciais forem configuradas.
 
 ## Política de disponibilidade
 
@@ -71,7 +153,7 @@ O TCGLooker agrega anúncios de cartas TCG publicados em lojas conhecidas, mant�
 - As primeiras fontes são Cards Hall e Tabletop TCG.
 - A coleta será executada a cada 15 minutos.
 - Usuários escolhem fontes em um catálogo suportado no MVP; URLs arbitrárias são uma evolução futura.
-- O PostgreSQL será hospedado no Supabase, sem Supabase Auth nesta fase.
+- PostgreSQL e autenticação serão hospedados no Supabase; o schema operacional permanece privado.
 
 ### Hipóteses de trabalho
 
@@ -122,9 +204,9 @@ O código deve respeitar a direção `API/Worker -> Application -> Domain`. Infr
 | Scraping | `HttpClient` + parser HTML por conector; Playwright apenas quando JavaScript for indispensável | HTTP direto é mais barato e previsível; browser é fallback | Playwright para tudo: maior consumo e mais pontos de falha |
 | Agendamento | Worker .NET + jobs persistidos no PostgreSQL | Evita infraestrutura extra e mantém reprocessamento após reinício | Timer somente em memória: perde estado; RabbitMQ/Redis: prematuros |
 | Notificação | Telegram primeiro; adaptador para WhatsApp Cloud API depois | Telegram reduz fricção no MVP; WhatsApp exige opt-in/template e validação operacional | SDKs chamados diretamente pelos casos de uso: cria acoplamento |
-| Auth | Adiado; futura porta `ICurrentUser` | O primeiro fluxo é coleta e busca; mantém o domínio independente do futuro provedor | Supabase Auth agora: amplia o escopo antes da wishlist |
+| Auth | Supabase Auth + validação JWT na API | Evita implementar identidade e mantém autorização de domínio na API | Auth próprio: trabalho e risco sem benefício demonstrado |
 
-O Supabase hospeda somente o PostgreSQL nesta fase. A API usa uma connection string do servidor e mantém suas tabelas no schema privado `tcglooker`, fora da Data API. O SDK Supabase não é dependência da solução. Para um backend persistente, usar conexão direta quando IPv6 estiver disponível ou Supavisor em modo sessão quando o ambiente for apenas IPv4.
+O Supabase hospeda PostgreSQL e Auth. A API valida access tokens pelo OIDC/JWKS, usa uma connection string do servidor e mantém suas tabelas no schema privado `tcglooker`, fora da Data API. Para um backend persistente, usar conexão direta quando IPv6 estiver disponível ou Supavisor em modo sessão quando o ambiente for apenas IPv4.
 
 ## 4. Módulos
 
@@ -305,7 +387,7 @@ O scraper nunca envia notificações diretamente. Uma falha do provedor não rev
 
 ## 9. Segurança e operação
 
-- Somente conectores compilados/configurados podem acessar a rede; nenhum endpoint recebe URL de scraping.
+- Somente conectores compilados/configurados podem acessar a rede; o cadastro aceita URL apenas após validação HTTPS, SSRF e compatibilidade do conector.
 - Tokens, connection strings e chaves ficam em secret manager/variáveis de ambiente, nunca em `appsettings.json` versionado.
 - Destinos de notificação são cifrados em repouso e mascarados em logs.
 - Autorização por propriedade em wishlist, fontes e canais; rate limiting nos endpoints públicos e autenticados.
@@ -361,9 +443,9 @@ Não é necessário mover os projetos imediatamente. Primeiro corrigimos SDKs/re
 
 1. O MVP cobre somente Pokémon TCG.
 2. Cards Hall (`www.cardshall.com.br`) e Tabletop TCG (`www.tabletoptcg.com.br`) são as primeiras lojas.
-3. O MVP permite selecionar somente conectores do catálogo; suporte a URLs arbitrárias fica para uma fase futura.
+3. O MVP cadastra sites apenas para tipos de conector suportados; `liga_magic` é o primeiro tipo disponível.
 4. Quinze minutos é a frequência aceita para atualização.
-5. Supabase hospeda o PostgreSQL, mas autenticação fica para uma fase posterior.
+5. Supabase hospeda PostgreSQL e autenticação; a API valida o JWT e aplica propriedade/escopo.
 
 ## Decisões-chave
 
@@ -390,4 +472,3 @@ Não é necessário mover os projetos imediatamente. Primeiro corrigimos SDKs/re
 - estratégia de identificação de variantes por TCG;
 - provedor de identidade;
 - requisitos comerciais do canal WhatsApp.
-

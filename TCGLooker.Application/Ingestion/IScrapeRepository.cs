@@ -2,9 +2,14 @@ namespace TCGLooker.Application.Ingestion;
 
 public interface IScrapeRepository
 {
+    Task<IAsyncDisposable?> TryAcquireStoreLeaseAsync(
+        Guid storeId,
+        CancellationToken cancellationToken = default);
+
     Task<ScrapeExecution> StartAsync(
-        string storeKey,
+        Guid storeId,
         ScrapeMode mode,
+        DateTimeOffset startedAt,
         CancellationToken cancellationToken = default);
 
     Task<int> UpsertAvailableAsync(
@@ -25,6 +30,8 @@ public interface IScrapeRepository
     Task FailAsync(
         ScrapeExecution execution,
         string errorCode,
+        int itemsSeen,
+        int itemsChanged,
         DateTimeOffset finishedAt,
         CancellationToken cancellationToken = default);
 

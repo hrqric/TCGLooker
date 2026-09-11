@@ -5,6 +5,7 @@ namespace TCGLooker.Application.Ingestion;
 
 public interface IStoreConnector
 {
+    Guid StoreId { get; }
     string Key { get; }
 
     Task<ScrapePage> FetchAsync(
