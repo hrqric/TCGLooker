@@ -107,7 +107,7 @@ public sealed class WishlistServiceTests
             return Task.FromResult<IReadOnlyCollection<WishlistView>>([]);
         }
 
-        public Task<bool> DisableAsync(
+        public Task<bool> DeleteAsync(
             Guid userId,
             Guid wishlistItemId,
             CancellationToken cancellationToken = default)

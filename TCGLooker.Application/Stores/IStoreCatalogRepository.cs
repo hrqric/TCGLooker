@@ -2,6 +2,16 @@ namespace TCGLooker.Application.Stores;
 
 public interface IStoreCatalogRepository
 {
+    Task<IReadOnlyCollection<StoreView>> ListVisibleAsync(
+        Guid? userId,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> SetSelectionAsync(
+        Guid userId,
+        Guid storeId,
+        bool isEnabled,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyCollection<StoreSource>> ListEnabledAsync(
         CancellationToken cancellationToken = default);
 
@@ -9,6 +19,16 @@ public interface IStoreCatalogRepository
         StoreRegistration registration,
         CancellationToken cancellationToken = default);
 }
+
+public sealed record StoreView(
+    Guid Id,
+    string Slug,
+    string Name,
+    Uri BaseUrl,
+    string ConnectorType,
+    StoreScope Scope,
+    bool IsEnabled,
+    bool IsSelected);
 
 public enum StoreScope
 {

@@ -35,6 +35,7 @@ public static class DependencyInjection
         services.AddSingleton<IScrapeRepository, PostgresScrapeRepository>();
         services.AddSingleton<IScrapeOrchestrator, ScrapeOrchestrator>();
         services.AddSingleton<IStoreCatalogRepository, PostgresStoreCatalogRepository>();
+        services.AddSingleton<StorePreferencesService>();
         services.AddSingleton<IStoreConnectorFactory, StoreConnectorFactory>();
         services.AddSingleton<IStoreSiteValidator, StoreSiteValidator>();
         services.AddSingleton<ICardSearchRepository, PostgresCardSearchRepository>();

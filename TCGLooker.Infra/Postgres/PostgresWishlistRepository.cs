@@ -89,16 +89,15 @@ internal sealed class PostgresWishlistRepository(PostgresConnectionFactory conne
         return result;
     }
 
-    public async Task<bool> DisableAsync(
+    public async Task<bool> DeleteAsync(
         Guid userId,
         Guid wishlistItemId,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await connectionFactory.OpenConnectionAsync(cancellationToken);
         await using var command = new NpgsqlCommand("""
-            update tcglooker.wishlist_item
-            set is_active = false
-            where id = @id and user_id = @user_id and is_active
+            delete from tcglooker.wishlist_item
+            where id = @id and user_id = @user_id
             """, connection);
         command.Parameters.AddWithValue("id", wishlistItemId);
         command.Parameters.AddWithValue("user_id", userId);

@@ -1,4 +1,5 @@
 using Npgsql;
+using NpgsqlTypes;
 using TCGLooker.Application.Stores;
 
 namespace TCGLooker.Infra.Postgres;
@@ -6,6 +7,54 @@ namespace TCGLooker.Infra.Postgres;
 internal sealed class PostgresStoreCatalogRepository(PostgresConnectionFactory connectionFactory)
     : IStoreCatalogRepository
 {
+    public async Task<IReadOnlyCollection<StoreView>> ListVisibleAsync(
+        Guid? userId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connectionFactory.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            select s.id, s.slug, s.name, s.base_url, s.connector_type, s.scope,
+                   s.is_enabled, coalesce(selection.is_enabled, true)
+            from tcglooker.store s
+            left join tcglooker.user_store selection
+              on selection.store_id = s.id and selection.user_id = @user_id
+            where s.scope = 'global' or s.owner_user_id = @user_id
+            order by s.name, s.id
+            """, connection);
+        command.Parameters.Add("user_id", NpgsqlDbType.Uuid).Value = (object?)userId ?? DBNull.Value;
+
+        var result = new List<StoreView>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            result.Add(new StoreView(
+                reader.GetGuid(0), reader.GetString(1), reader.GetString(2),
+                new Uri(reader.GetString(3)), reader.GetString(4), FromDatabase(reader.GetString(5)),
+                reader.GetBoolean(6), reader.GetBoolean(7)));
+        return result;
+    }
+
+    public async Task<bool> SetSelectionAsync(
+        Guid userId,
+        Guid storeId,
+        bool isEnabled,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connectionFactory.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand("""
+            insert into tcglooker.user_store (user_id, store_id, is_enabled)
+            select @user_id, s.id, @is_enabled
+            from tcglooker.store s
+            where s.id = @store_id
+              and (s.scope = 'global' or s.owner_user_id = @user_id)
+            on conflict (user_id, store_id)
+            do update set is_enabled = excluded.is_enabled
+            """, connection);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("store_id", storeId);
+        command.Parameters.AddWithValue("is_enabled", isEnabled);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
     public async Task<IReadOnlyCollection<StoreSource>> ListEnabledAsync(
         CancellationToken cancellationToken = default)
     {

@@ -31,6 +31,13 @@ internal sealed class PostgresCardSearchRepository(PostgresConnectionFactory con
                   left join tcglooker.app_user owner on owner.id = s.owner_user_id
                   where cp.card_id = c.id
                     and l.availability = 'in_stock'
+                    and s.is_enabled
+                    and not exists (
+                        select 1 from tcglooker.user_store selection
+                        join tcglooker.app_user viewer on viewer.id = selection.user_id
+                        where selection.store_id = s.id
+                          and viewer.external_auth_id = @external_user_id
+                          and not selection.is_enabled)
                     and (s.scope = 'global' or owner.external_auth_id = @external_user_id))
             """, connection);
         countCommand.Parameters.AddWithValue("query", normalizedQuery);
@@ -54,6 +61,13 @@ internal sealed class PostgresCardSearchRepository(PostgresConnectionFactory con
                       left join tcglooker.app_user owner on owner.id = s.owner_user_id
                       where cp.card_id = c.id
                         and l.availability = 'in_stock'
+                        and s.is_enabled
+                        and not exists (
+                            select 1 from tcglooker.user_store selection
+                            join tcglooker.app_user viewer on viewer.id = selection.user_id
+                            where selection.store_id = s.id
+                              and viewer.external_auth_id = @external_user_id
+                              and not selection.is_enabled)
                         and (s.scope = 'global' or owner.external_auth_id = @external_user_id))
                 order by rank desc, c.canonical_name, c.id
                 limit @page_size offset @offset
@@ -70,6 +84,13 @@ internal sealed class PostgresCardSearchRepository(PostgresConnectionFactory con
             join tcglooker.store s on s.id = l.store_id
             left join tcglooker.app_user owner on owner.id = s.owner_user_id
             where l.availability = 'in_stock'
+              and s.is_enabled
+              and not exists (
+                  select 1 from tcglooker.user_store selection
+                  join tcglooker.app_user viewer on viewer.id = selection.user_id
+                  where selection.store_id = s.id
+                    and viewer.external_auth_id = @external_user_id
+                    and not selection.is_enabled)
               and (s.scope = 'global' or owner.external_auth_id = @external_user_id)
             order by mc.rank desc, mc.canonical_name, l.price_amount, l.id
             """, connection);

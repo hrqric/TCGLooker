@@ -14,7 +14,7 @@ public interface IWishlistRepository
         bool includeInactive,
         CancellationToken cancellationToken = default);
 
-    Task<bool> DisableAsync(
+    Task<bool> DeleteAsync(
         Guid userId,
         Guid wishlistItemId,
         CancellationToken cancellationToken = default);

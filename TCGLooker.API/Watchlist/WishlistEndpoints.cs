@@ -19,10 +19,10 @@ internal static class WishlistEndpoints
         group.MapGet("/", ListAsync)
             .WithName("ListWishlist")
             .WithSummary("Lista a wishlist do usuário autenticado.");
-        group.MapDelete("/{id:guid}", DisableAsync)
+        group.MapDelete("/{id:guid}", DeleteAsync)
             .RequireRateLimiting("wishlist-mutations")
-            .WithName("DisableWishlistItem")
-            .WithSummary("Desativa uma regra da wishlist sem apagar seu histórico.");
+            .WithName("DeleteWishlistItem")
+            .WithSummary("Exclui permanentemente um item da wishlist do usuário autenticado.");
 
         return group;
     }
@@ -103,7 +103,7 @@ internal static class WishlistEndpoints
         }
     }
 
-    private static async Task<IResult> DisableAsync(
+    private static async Task<IResult> DeleteAsync(
         Guid id,
         ClaimsPrincipal principal,
         WishlistService service,
@@ -114,7 +114,7 @@ internal static class WishlistEndpoints
             return Results.Unauthorized();
         try
         {
-            return await service.DisableAsync(subject, id, cancellationToken)
+            return await service.DeleteAsync(subject, id, cancellationToken)
                 ? Results.NoContent()
                 : Results.NotFound();
         }

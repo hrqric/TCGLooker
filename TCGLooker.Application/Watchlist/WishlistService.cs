@@ -30,18 +30,18 @@ public sealed class WishlistService(
         return await wishlistRepository.ListAsync(identity.Id, includeInactive, cancellationToken);
     }
 
-    public async Task<bool> DisableAsync(
+    public async Task<bool> DeleteAsync(
         string subject,
         Guid wishlistItemId,
         CancellationToken cancellationToken = default)
     {
         subject = NormalizeSubject(subject);
         if (wishlistItemId == Guid.Empty)
-            throw new ArgumentException("O identificador da wishlist é inválido.", nameof(wishlistItemId));
+            return false;
 
         var identity = await identityRepository.GetOrCreateAsync(subject, cancellationToken);
         EnsureActive(identity);
-        return await wishlistRepository.DisableAsync(identity.Id, wishlistItemId, cancellationToken);
+        return await wishlistRepository.DeleteAsync(identity.Id, wishlistItemId, cancellationToken);
     }
 
     private static string NormalizeSubject(string subject)

@@ -58,6 +58,16 @@ builder.Services.AddAuthorization();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("store-preferences", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.User.FindFirstValue("sub") ?? "anonymous",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 30,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            }));
     options.AddFixedWindowLimiter(
         "site-registration",
         limiter =>
@@ -135,6 +145,7 @@ app.MapGet("/api/v1/cards/search", async (
     .WithSummary("Busca cartas Pokémon e suas ofertas atualmente disponíveis.");
 
 app.MapStoreRegistration();
+app.MapStorePreferences();
 app.MapWishlist();
 
 app.Run();

@@ -12,5 +12,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\TCGLooker.Infra\TCGLooker.Infra.csproj" />
+    <ProjectReference Include="..\TCGLooker.API\TCGLooker.API.csproj" />
   </ItemGroup>
 </Project>
