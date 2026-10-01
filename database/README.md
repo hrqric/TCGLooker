@@ -18,3 +18,7 @@ Para uma base já criada com a primeira versão, execute em ordem
 Para um backend persistente, prefira a conexão direta se o host tiver IPv6. Em runtime IPv4-only, use o Supavisor em modo sessão, porta 5432. Migrations e ferramentas administrativas devem usar a conexão direta.
 
 As tabelas não ficam em `public` e o schema não é concedido a `anon` ou `authenticated`; portanto, elas não são expostas pela Data API. O Supabase Auth emite os JWTs, mas somente a API do TCGLooker usa a conexão de servidor e acessa o schema privado.
+
+## Progresso e atualização do catálogo
+
+A descoberta usa `scrape_run.mode = 'full'` e salva a próxima página em `cursor`. A atualização de produtos usa `mode = 'incremental'`, com JSON `Kind=product_refresh` e `ProductUrl` no mesmo campo, um registro por tentativa. A fila deriva das URLs e de `max(listing.last_seen_at)`; a consulta de tentativas recentes aproveita o índice existente `(store_id, started_at desc)`. Essa separação não requer novas tabelas ou migrations. O histórico recente de tentativas deve ser preservado para manter o intervalo de novas tentativas após reinícios.

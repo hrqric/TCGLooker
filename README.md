@@ -1,5 +1,8 @@
 # TCGLooker
 
+Para executar o Worker no Northflank usando um proxy residencial protegido, consulte
+[a configuracao Docker + Squid](ops/home-proxy/README.md).
+
 API para agregar ofertas de cartas Pokémon TCG em lojas suportadas, ajudando montadores de deck a encontrar as cartas desejadas e avisando quando itens da wishlist ficarem disponíveis.
 
 O projeto está na fase de fundação arquitetural. A proposta inicial, o modelo de dados, os contratos da API e as decisões ainda abertas estão em [docs/architecture/base-architecture.md](docs/architecture/base-architecture.md).
@@ -49,7 +52,21 @@ dotnet run --project TCGLooker.Worker
 dotnet run --project TCGLooker.API --launch-profile http
 ```
 
-Teste a busca em `http://localhost:5204/api/v1/cards/search?q=Charizard`. Por padrão, o início consulta novidades; a reconciliação completa acontece após 24 horas de execução. Para popular todo o catálogo inicialmente, configure `Scraping:RunFullOnStartup=true` nessa execução e depois retorne a `false`. Os loops das lojas compartilham o limite de rede. Cada ciclo aguarda 15 minutos após terminar antes de começar outro.
+Teste a busca em `http://localhost:5204/api/v1/cards/search?q=Charizard`. O Worker percorre todo o catálogo Pokémon com estoque de cada loja em lotes: por padrão, uma página por execução, solicitando 30 produtos por página (cada produto pode ter várias ofertas). Ele segue os links de paginação da loja, salva a próxima página no banco e continua dali depois de 15 minutos, inclusive após reinícios. Ao terminar todas as páginas, a execução seguinte inicia uma nova volta para atualizar preços e estoque. Os loops das lojas compartilham o limite de rede.
+
+O progresso fica no campo existente `tcglooker.scrape_run.cursor`, com o identificador e início da volta, próxima página/URL e assinaturas das páginas visitadas. Não é necessária uma migration. Ofertas e progresso de cada página são gravados na mesma transação; uma página interrompida é repetida sem pular itens. Lotes intermediários recebem `partially_succeeded`; `succeeded` indica que a última página foi alcançada. Os logs mostram a volta, páginas processadas e próxima página. Uma paginação repetida ou com salto interrompe a coleta sem avançar o progresso.
+
+Somente uma volta completa pode contabilizar ofertas ausentes: ofertas vistas em qualquer lote daquela volta são preservadas. Estoque zero informado explicitamente em uma página válida é salvo junto das demais ofertas. As opções antigas `RunFullOnStartup` e `FullReconciliationIntervalHours` não controlam mais o agendamento da descoberta. Alterações no catálogo durante a paginação podem deslocar itens; as voltas seguintes os revisitam.
+
+### Atualização dos produtos conhecidos
+
+Além da descoberta, cada loja tem uma rotina de atualização pelos links dos produtos já cadastrados. A cada 5 minutos após um lote, ela verifica quais produtos não são observados há pelo menos 150 minutos (2,5 horas). Esse prazo é a idade mínima para entrar na fila, não uma garantia de atualização: lojas maiores, bloqueios e o orçamento de requisições podem aumentar a espera.
+
+O lote padrão tem até 10 produtos. As posições 1, 5 e 9 escolhem apenas pela observação mais antiga; as outras priorizam wishlists ativas, respeitando a visibilidade da loja e a seleção do usuário, também ordenadas por antiguidade. Sem produtos prioritários, os demais preenchem o lote. As variantes de uma mesma URL compartilham a consulta. Se a descoberta acaba de visitar aquele produto, ele sai da fila até ficar antigo novamente.
+
+As duas rotinas rodam no mesmo Worker, sem sobreposição por loja, e compartilham o bloqueio de execução no PostgreSQL, limites HTTP e pausas de 403/429. A descoberta tem prioridade quando vence seu intervalo; a atualização cede entre produtos e não inicia outro produto quando a descoberta já está devida. Uma requisição em andamento pode atrasar a troca. Lojas diferentes continuam compartilhando o orçamento global.
+
+Cada tentativa de atualização gera um `scrape_run` de modo `incremental`, com `Kind=product_refresh` e `ProductUrl` no `cursor`. A atualização não altera o cursor `full` da descoberta nem reconcilia ausências do catálogo. A oferta atualizada e o sucesso da tentativa são gravados juntos. Uma tentativa recente, mesmo interrompida ou com falha, impede repetir o produto por 30 minutos; esse controle sobrevive a reinícios. Falhas de um produto não impedem os outros de avançar; restrições da loja pausam as duas rotinas. Nenhuma migration adicional é necessária.
 
 ### Limites e proxy do scraping
 
@@ -57,6 +74,13 @@ API (validação de sites) e Worker usam a mesma política, com um orçamento in
 
 | Configuração em `Scraping` | Padrão | Comportamento |
 |---|---|---|
+| `MaxPagesPerRun` | 1 | Páginas por execução, entre 1 e 100; retoma do progresso salvo |
+| `IntervalMinutes` | 15 | Pausa após cada lote antes de continuar a loja |
+| `Refresh:Enabled` | `true` | Ativa a atualização de produtos conhecidos |
+| `Refresh:StaleAfterMinutes` | 150 | Idade mínima da última observação para entrar na fila |
+| `Refresh:PollingMinutes` | 5 | Pausa entre lotes de atualização |
+| `Refresh:MaxProductsPerRun` | 10 | Limite de produtos por lote, entre 4 e 100 |
+| `Refresh:FailureRetryMinutes` | 30 | Intervalo mínimo entre tentativas do mesmo produto |
 | `RequestsPerMinute` | 6 | Máximo por domínio, inclusive entre conectores distintos |
 | `GlobalRequestsPerMinute` | 12 | Máximo somando todas as lojas no processo |
 | `JitterMilliseconds` | 500 | Pausa aleatória adicional de 0 a 500 ms |
@@ -287,7 +311,7 @@ erDiagram
 
 - Oferta é única por `(StoreId, ExternalId)`; se a loja não oferecer ID estável, usar `Fingerprint` documentado pelo conector.
 - Dinheiro usa `numeric`, nunca ponto flutuante; moeda usa código ISO 4217.
-- Cada página publica observações positivas de estoque e atualiza `LastSeenAt`. Estoque zerado e ausências só são promovidos após o término bem-sucedido da coleta; ausência exige duas reconciliações completas bem-sucedidas. Coleta parcial ou com falha nunca retira uma oferta.
+- Cada página válida salva as ofertas com estoque conhecido e o progresso na mesma transação. Estoque explicitamente zerado é atualizado nessa página; quantidade desconhecida preserva o estado anterior de uma oferta já cadastrada. Ausência exige duas voltas completas bem-sucedidas e considera observações de todos os lotes de cada volta. Um lote parcial ou uma página com falha não contabiliza ausências.
 - A busca retorna somente ofertas `in_stock`. Ofertas indisponíveis ficam retidas por 30 dias e só são removidas sem trabalho de notificação pendente; `Card` e `CardPrinting` permanecem no catálogo.
 - Normalização incerta mantém `CardPrintingId = null`; nunca associa silenciosamente a variante errada.
 - Entrega é única por `(WishlistItemId, ListingId, ChannelId, EventType, AvailabilityVersion)`, impedindo spam em retries.

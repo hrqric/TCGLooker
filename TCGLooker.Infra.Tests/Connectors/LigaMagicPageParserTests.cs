@@ -9,6 +9,42 @@ public sealed class LigaMagicPageParserTests
     private readonly LigaMagicPageParser _parser = new();
 
     [Fact]
+    public async Task ParseNextPage_follows_store_pagination_even_for_a_short_product_page()
+    {
+        const string html = """
+            <a href="/?view=ecom/item&amp;refid=123">Charizard</a>
+            <a class="ecomresp-paginacao" href="#"><b>1</b></a>
+            <a class="ecomresp-paginacao" href="./?view=ecom/itens&amp;tcg=2&amp;txt_limit=30&amp;itens_total=405&amp;page=2
+            ">2</a>
+            <a class="ecomresp-paginacao" href="./?view=ecom/itens&amp;tcg=2&amp;page=14">&raquo;</a>
+            """;
+        var next = await _parser.ParseNextPageAsync(html, new Uri("https://example.test/"), 1,
+            TestContext.Current.CancellationToken);
+        Assert.Equal("https://example.test/?view=ecom/itens&tcg=2&txt_limit=30&itens_total=405&page=2", next!.AbsoluteUri);
+    }
+
+    [Fact]
+    public async Task ParseNextPage_ignores_other_origins_games_and_previous_pages()
+    {
+        const string html = """
+            <a href="https://elsewhere.test/?view=ecom/itens&amp;tcg=2&amp;page=3">External</a>
+            <a href="/?view=ecom/itens&amp;tcg=1&amp;page=3">Magic</a>
+            <a href="/?view=ecom/itens&amp;tcg=2&amp;page=1">1</a>
+            <a href="/?view=ecom/itens&amp;tcg=2&amp;page=2">2</a>
+            """;
+        Assert.Null(await _parser.ParseNextPageAsync(html, new Uri("https://example.test/"), 2,
+            TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task ParseNextPage_rejects_missing_intermediate_pages()
+    {
+        const string html = "<a href='/?view=ecom/itens&tcg=2&page=4'>Last</a>";
+        await Assert.ThrowsAsync<InvalidDataException>(() => _parser.ParseNextPageAsync(
+            html, new Uri("https://example.test/"), 1, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task ParseProductLinks_keeps_only_card_details_and_removes_duplicates()
     {
         const string html = """

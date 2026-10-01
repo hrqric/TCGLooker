@@ -7,7 +7,8 @@ using TCGLooker.Infra.Connectors;
 
 namespace TCGLooker.Infra.Postgres;
 
-internal sealed class PostgresScrapeRepository(PostgresConnectionFactory connectionFactory) : IScrapeRepository
+internal sealed partial class PostgresScrapeRepository(PostgresConnectionFactory connectionFactory)
+    : IScrapeRepository, IProductRefreshRepository
 {
     public async Task<IAsyncDisposable?> TryAcquireStoreLeaseAsync(
         Guid storeId,
@@ -44,22 +45,57 @@ internal sealed class PostgresScrapeRepository(PostgresConnectionFactory connect
     {
         var runId = Guid.NewGuid();
         await using var connection = await connectionFactory.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        ScrapeProgress? progress = null;
+        await using (var previous = new NpgsqlCommand("""
+            select cursor, status from tcglooker.scrape_run
+            where store_id = @store_id and mode = @mode and cursor is not null
+              and cursor not like '{"Kind":"product_refresh",%'
+            order by started_at desc, id desc
+            limit 1
+            """, connection, transaction))
+        {
+            previous.Parameters.AddWithValue("store_id", storeId);
+            previous.Parameters.AddWithValue("mode", ToDatabase(mode));
+            await using var reader = await previous.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                progress = JsonSerializer.Deserialize<ScrapeProgress>(reader.GetString(0));
+                if (reader.GetString(1) == "succeeded" && progress?.NextPage is null)
+                    progress = null;
+            }
+        }
+        progress ??= new ScrapeProgress(Guid.NewGuid(), startedAt);
+
+        // The store lease proves any previous running attempt has been abandoned.
+        await using (var abandoned = new NpgsqlCommand("""
+            update tcglooker.scrape_run
+            set status = 'failed', finished_at = @finished_at, error_code = 'WorkerInterrupted'
+            where store_id = @store_id and status = 'running'
+            """, connection, transaction))
+        {
+            abandoned.Parameters.AddWithValue("store_id", storeId);
+            abandoned.Parameters.AddWithValue("finished_at", startedAt);
+            await abandoned.ExecuteNonQueryAsync(cancellationToken);
+        }
         await using var command = new NpgsqlCommand("""
-            insert into tcglooker.scrape_run (id, store_id, started_at, status, mode)
-            select @run_id, id, @started_at, 'running', @mode
+            insert into tcglooker.scrape_run (id, store_id, started_at, status, mode, cursor)
+            select @run_id, id, @started_at, 'running', @mode, @cursor
             from tcglooker.store
             where id = @store_id and is_enabled
             returning store_id
-            """, connection);
+            """, connection, transaction);
         command.Parameters.AddWithValue("run_id", runId);
         command.Parameters.AddWithValue("store_id", storeId);
         command.Parameters.AddWithValue("started_at", startedAt);
         command.Parameters.AddWithValue("mode", ToDatabase(mode));
+        command.Parameters.AddWithValue("cursor", JsonSerializer.Serialize(progress));
 
         var result = await command.ExecuteScalarAsync(cancellationToken);
         if (result is not Guid returnedStoreId)
             throw new InvalidOperationException($"Enabled store '{storeId}' was not found.");
-        return new ScrapeExecution(runId, returnedStoreId, mode);
+        await transaction.CommitAsync(cancellationToken);
+        return new ScrapeExecution(runId, returnedStoreId, mode, progress);
     }
 
     private sealed class PostgresStoreLease(NpgsqlConnection connection, Guid storeId) : IAsyncDisposable
@@ -81,43 +117,65 @@ internal sealed class PostgresScrapeRepository(PostgresConnectionFactory connect
         }
     }
 
-    public async Task<int> UpsertAvailableAsync(
+    public async Task<int> SavePageAsync(
         ScrapeExecution execution,
         IReadOnlyCollection<ExternalListing> listings,
+        ScrapeProgress progress,
+        int itemsSeen,
+        int itemsChanged,
         DateTimeOffset observedAt,
         CancellationToken cancellationToken = default)
     {
-        if (listings.Count == 0)
-            return 0;
-
         await using var connection = await connectionFactory.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
         var changed = await UpsertListingsAsync(
             connection, transaction, execution, listings, observedAt, cancellationToken);
+        await using var checkpoint = new NpgsqlCommand("""
+            update tcglooker.scrape_run
+            set cursor = @cursor, items_seen = @items_seen, items_changed = @items_changed
+            where id = @run_id and status = 'running'
+            """, connection, transaction);
+        checkpoint.Parameters.AddWithValue("cursor", JsonSerializer.Serialize(progress));
+        checkpoint.Parameters.AddWithValue("items_seen", itemsSeen);
+        checkpoint.Parameters.AddWithValue("items_changed", itemsChanged + changed);
+        checkpoint.Parameters.AddWithValue("run_id", execution.RunId);
+        if (await checkpoint.ExecuteNonQueryAsync(cancellationToken) != 1)
+            throw new InvalidOperationException("The scrape attempt is no longer running.");
         await transaction.CommitAsync(cancellationToken);
         return changed;
     }
 
-    public async Task<int> CompleteAsync(
+    public async Task CompleteAsync(
         ScrapeExecution execution,
-        IReadOnlyCollection<ExternalListing> unavailableListings,
+        ScrapeProgress progress,
         int itemsSeen,
         int itemsChanged,
-        DateTimeOffset observedAt,
         DateTimeOffset finishedAt,
         CancellationToken cancellationToken = default)
     {
         await using var connection = await connectionFactory.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-        var unavailableChanged = await UpsertListingsAsync(
-            connection,
-            transaction,
-            execution,
-            unavailableListings,
-            observedAt,
-            cancellationToken);
+        // Close the attempt before reconciling in the same transaction. Retrying
+        // completion must never count a second miss for the same catalog cycle.
+        await using var complete = new NpgsqlCommand("""
+            update tcglooker.scrape_run
+            set finished_at = @finished_at,
+                status = @status,
+                items_seen = @items_seen,
+                items_changed = @items_changed,
+                cursor = @cursor
+            where id = @run_id and status = 'running'
+            """, connection, transaction);
+        complete.Parameters.AddWithValue("finished_at", finishedAt);
+        complete.Parameters.AddWithValue("status", progress.NextPage is null ? "succeeded" : "partially_succeeded");
+        complete.Parameters.AddWithValue("items_seen", itemsSeen);
+        complete.Parameters.AddWithValue("items_changed", itemsChanged);
+        complete.Parameters.AddWithValue("cursor", JsonSerializer.Serialize(progress));
+        complete.Parameters.AddWithValue("run_id", execution.RunId);
+        if (await complete.ExecuteNonQueryAsync(cancellationToken) != 1)
+            throw new InvalidOperationException("The scrape attempt is no longer running.");
 
-        if (execution.Mode == ScrapeMode.Full)
+        if (execution.Mode == ScrapeMode.Full && progress.NextPage is null)
         {
             await using var reconcile = new NpgsqlCommand("""
                 update tcglooker.listing
@@ -137,29 +195,15 @@ internal sealed class PostgresScrapeRepository(PostgresConnectionFactory connect
                         else unavailable_since
                     end
                 where store_id = @store_id
-                  and last_seen_run_id is distinct from @run_id
+                  and last_seen_at < @cycle_started_at
                 """, connection, transaction);
             reconcile.Parameters.AddWithValue("store_id", execution.StoreId);
-            reconcile.Parameters.AddWithValue("run_id", execution.RunId);
+            reconcile.Parameters.AddWithValue("cycle_started_at", progress.CycleStartedAt);
             reconcile.Parameters.AddWithValue("finished_at", finishedAt);
             await reconcile.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        await using var complete = new NpgsqlCommand("""
-            update tcglooker.scrape_run
-            set finished_at = @finished_at,
-                status = 'succeeded',
-                items_seen = @items_seen,
-                items_changed = @items_changed
-            where id = @run_id and status = 'running'
-            """, connection, transaction);
-        complete.Parameters.AddWithValue("finished_at", finishedAt);
-        complete.Parameters.AddWithValue("items_seen", itemsSeen);
-        complete.Parameters.AddWithValue("items_changed", itemsChanged + unavailableChanged);
-        complete.Parameters.AddWithValue("run_id", execution.RunId);
-        await complete.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
-        return unavailableChanged;
     }
 
     private static async Task<int> UpsertListingsAsync(
@@ -173,6 +217,21 @@ internal sealed class PostgresScrapeRepository(PostgresConnectionFactory connect
         var changed = 0;
         foreach (var listing in listings)
         {
+            if (listing.Quantity is null)
+            {
+                // A missing stock field is not evidence that a known offer disappeared.
+                await using var seen = new NpgsqlCommand("""
+                    update tcglooker.listing
+                    set last_seen_at = @observed_at, last_seen_run_id = @run_id, consecutive_misses = 0
+                    where store_id = @store_id and external_id = @external_id
+                    """, connection, transaction);
+                seen.Parameters.AddWithValue("observed_at", observedAt);
+                seen.Parameters.AddWithValue("run_id", execution.RunId);
+                seen.Parameters.AddWithValue("store_id", execution.StoreId);
+                seen.Parameters.AddWithValue("external_id", listing.ExternalId);
+                await seen.ExecuteNonQueryAsync(cancellationToken);
+                continue;
+            }
             var setId = await UpsertSetAsync(connection, transaction, listing, cancellationToken);
             var cardId = await UpsertCardAsync(connection, transaction, listing.CardName, cancellationToken);
             var printingId = await UpsertPrintingAsync(

@@ -14,6 +14,37 @@ internal sealed partial class LigaMagicPageParser
 {
     private readonly HtmlParser _parser = new();
 
+    public async Task<Uri?> ParseNextPageAsync(
+        string html,
+        Uri pageUri,
+        int currentPage,
+        CancellationToken cancellationToken)
+    {
+        var document = await _parser.ParseDocumentAsync(html, cancellationToken);
+        var candidates = document.QuerySelectorAll("a[href]")
+            .Select(link => link.GetAttribute("href"))
+            .Where(href => !string.IsNullOrWhiteSpace(href))
+            .Select(href => Uri.TryCreate(pageUri, href!.Trim(), out var uri) ? uri : null)
+            .Where(uri => uri is not null
+                && StoreAddressPolicy.IsSameOrigin(pageUri, uri)
+                && GetQueryValue(uri, "view") == "ecom/itens"
+                && GetQueryValue(uri, "tcg") == "2")
+            .Select(uri => new
+            {
+                Uri = uri!,
+                Page = int.TryParse(GetQueryValue(uri!, "page"), out var page) ? page : 0
+            })
+            .Where(candidate => candidate.Page > currentPage)
+            .OrderBy(candidate => candidate.Page)
+            .ToArray();
+
+        if (candidates.Length == 0)
+            return null;
+        if (candidates[0].Page != currentPage + 1)
+            throw new InvalidDataException("Catalog pagination contains a gap.");
+        return candidates[0].Uri;
+    }
+
     public async Task<IReadOnlyCollection<Uri>> ParseProductLinksAsync(
         string html,
         Uri pageUri,
@@ -217,7 +248,7 @@ internal sealed partial class LigaMagicPageParser
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
     }
 
-    private static string? GetQueryValue(Uri uri, string key)
+    internal static string? GetQueryValue(Uri uri, string key)
     {
         foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
         {

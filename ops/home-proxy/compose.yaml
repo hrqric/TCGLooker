@@ -1,0 +1,27 @@
+services:
+  squid:
+    image: tcglooker/squid-proxy:local
+    build:
+      context: .
+    restart: unless-stopped
+    ports:
+      - "${SQUID_BIND_IP:-127.0.0.1}:${SQUID_PORT:-3128}:3128"
+    volumes:
+      - type: bind
+        source: ./secrets/users
+        target: /run/secrets/squid_users
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /run/squid:mode=1777
+      - /var/log/squid:mode=1777
+      - /var/spool/squid:mode=1777
+      - /tmp:mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.50
+

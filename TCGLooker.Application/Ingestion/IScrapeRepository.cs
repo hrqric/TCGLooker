@@ -12,18 +12,21 @@ public interface IScrapeRepository
         DateTimeOffset startedAt,
         CancellationToken cancellationToken = default);
 
-    Task<int> UpsertAvailableAsync(
+    // Offers and the next page must commit together: never skip an uncommitted page.
+    Task<int> SavePageAsync(
         ScrapeExecution execution,
         IReadOnlyCollection<ExternalListing> listings,
-        DateTimeOffset observedAt,
-        CancellationToken cancellationToken = default);
-
-    Task<int> CompleteAsync(
-        ScrapeExecution execution,
-        IReadOnlyCollection<ExternalListing> unavailableListings,
+        ScrapeProgress progress,
         int itemsSeen,
         int itemsChanged,
         DateTimeOffset observedAt,
+        CancellationToken cancellationToken = default);
+
+    Task CompleteAsync(
+        ScrapeExecution execution,
+        ScrapeProgress progress,
+        int itemsSeen,
+        int itemsChanged,
         DateTimeOffset finishedAt,
         CancellationToken cancellationToken = default);
 
@@ -40,4 +43,11 @@ public interface IScrapeRepository
         CancellationToken cancellationToken = default);
 }
 
-public sealed record ScrapeExecution(Guid RunId, Guid StoreId, ScrapeMode Mode);
+public sealed record ScrapeExecution(Guid RunId, Guid StoreId, ScrapeMode Mode, ScrapeProgress Progress);
+
+public sealed record ScrapeProgress(
+    Guid CycleId,
+    DateTimeOffset CycleStartedAt,
+    int? NextPage = 1,
+    Uri? NextPageUri = null,
+    string[]? PageFingerprints = null);

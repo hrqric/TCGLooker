@@ -19,11 +19,13 @@ public enum ScrapeMode
     Full
 }
 
-public sealed record ScrapeRequest(ScrapeMode Mode, int Page = 1);
+public sealed record ScrapeRequest(ScrapeMode Mode, int Page = 1, Uri? PageUri = null);
 
 public sealed record ScrapePage(
     IReadOnlyCollection<ExternalListing> Listings,
-    int? NextPage);
+    int? NextPage,
+    Uri? NextPageUri = null,
+    string? Fingerprint = null);
 
 public sealed record ExternalListing(
     string ExternalId,

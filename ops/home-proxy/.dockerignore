@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!docker-entrypoint.sh
+!config/
+!config/squid.conf
+

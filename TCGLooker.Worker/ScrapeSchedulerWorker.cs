@@ -12,6 +12,7 @@ internal sealed class ScrapeSchedulerWorker(
     IStoreCatalogRepository storeCatalog,
     IStoreConnectorFactory connectorFactory,
     IScrapeOrchestrator orchestrator,
+    IProductRefreshOrchestrator productRefresh,
     TimeProvider timeProvider,
     ILogger<ScrapeSchedulerWorker> logger) : BackgroundService
 {
@@ -101,64 +102,66 @@ internal sealed class ScrapeSchedulerWorker(
         logger.LogDebug("Worker supervisor has {WorkerCount} active store workers", _workers.Count);
     }
 
-    private async Task RunStoreAsync(
+    internal async Task RunStoreAsync(
         StoreSource source,
         IStoreConnector connector,
         CancellationToken cancellationToken)
     {
         var interval = TimeSpan.FromMinutes(Math.Max(
             1, configuration.GetValue("Scraping:IntervalMinutes", 15)));
-        var fullInterval = TimeSpan.FromHours(Math.Max(
-            1, configuration.GetValue("Scraping:FullReconciliationIntervalHours", 24)));
-        var runFullOnStartup = configuration.GetValue("Scraping:RunFullOnStartup", false);
-        var lastFullRun = runFullOnStartup ? DateTimeOffset.MinValue : timeProvider.GetUtcNow();
+        var refreshInterval = TimeSpan.FromMinutes(Math.Max(
+            1, configuration.GetValue("Scraping:Refresh:PollingMinutes", 5)));
+        var refreshEnabled = configuration.GetValue("Scraping:Refresh:Enabled", true)
+            && connector is IProductStoreConnector;
         var forbiddenUntil = DateTimeOffset.MinValue;
-
-        var startupSucceeded = await RunCycleAsync(
-            connector,
-            runFullOnStartup ? ScrapeMode.Full : ScrapeMode.Incremental,
-            forbiddenUntil,
-            value => forbiddenUntil = value,
-            cancellationToken);
-        if (runFullOnStartup && startupSucceeded)
-            lastFullRun = timeProvider.GetUtcNow();
+        var nextDiscovery = timeProvider.GetUtcNow();
+        var nextRefresh = nextDiscovery;
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            // Wait after completion; a slow crawl must not trigger a queued cycle immediately.
-            await Task.Delay(interval, timeProvider, cancellationToken);
             var now = timeProvider.GetUtcNow();
-            var mode = now - lastFullRun >= fullInterval ? ScrapeMode.Full : ScrapeMode.Incremental;
-            var succeeded = await RunCycleAsync(
-                connector, mode, forbiddenUntil, value => forbiddenUntil = value, cancellationToken);
-            if (mode == ScrapeMode.Full && succeeded)
-                lastFullRun = now;
+            if (forbiddenUntil > now)
+            {
+                await Task.Delay(forbiddenUntil - now, timeProvider, cancellationToken);
+                continue;
+            }
+
+            // Discovery always wins when both routines are due. Refresh yields
+            // between products at its deadline instead of occupying the store indefinitely.
+            if (now >= nextDiscovery)
+            {
+                await RunCycleAsync(connector,
+                    token => orchestrator.RunAsync(connector, ScrapeMode.Full, token),
+                    value => forbiddenUntil = value, cancellationToken);
+                nextDiscovery = timeProvider.GetUtcNow().Add(interval);
+                continue;
+            }
+
+            if (refreshEnabled && now >= nextRefresh)
+            {
+                await RunCycleAsync(connector,
+                    token => productRefresh.RunAsync((IProductStoreConnector)connector, nextDiscovery, token),
+                    value => forbiddenUntil = value, cancellationToken);
+                nextRefresh = timeProvider.GetUtcNow().Add(refreshInterval);
+                continue;
+            }
+
+            var nextWork = refreshEnabled && nextRefresh < nextDiscovery ? nextRefresh : nextDiscovery;
+            await Task.Delay(nextWork - now, timeProvider, cancellationToken);
         }
 
         logger.LogDebug("Dedicated worker loop ended for store {StoreKey}", source.ConnectorKey);
     }
 
-    private async Task<bool> RunCycleAsync(
+    private async Task RunCycleAsync(
         IStoreConnector connector,
-        ScrapeMode mode,
-        DateTimeOffset forbiddenUntil,
+        Func<CancellationToken, Task> run,
         Action<DateTimeOffset> setForbiddenUntil,
         CancellationToken cancellationToken)
     {
-        var now = timeProvider.GetUtcNow();
-        if (forbiddenUntil > now)
-        {
-            logger.LogDebug(
-                "Connector {StoreKey} is paused until {BlockedUntil} after a store restriction",
-                connector.Key,
-                forbiddenUntil);
-            return false;
-        }
-
         try
         {
-            await orchestrator.RunAsync(connector, mode, cancellationToken);
-            return true;
+            await run(cancellationToken);
         }
         catch (ScrapeDeferredException exception)
         {
@@ -166,7 +169,6 @@ internal sealed class ScrapeSchedulerWorker(
             logger.LogWarning(
                 "Connector {StoreKey} returned HTTP {StatusCode} and is paused until {RetryAt}",
                 connector.Key, (int?)exception.StatusCode, exception.RetryAt);
-            return false;
         }
         catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.Forbidden)
         {
@@ -178,12 +180,10 @@ internal sealed class ScrapeSchedulerWorker(
                 "Connector {StoreKey} returned HTTP 403 and is paused until {RetryAt}",
                 connector.Key,
                 retryAt);
-            return false;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(exception, "Connector {StoreKey} will be retried in the next cycle", connector.Key);
-            return false;
         }
     }
 

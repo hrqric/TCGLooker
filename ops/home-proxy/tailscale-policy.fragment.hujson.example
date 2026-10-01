@@ -1,0 +1,20 @@
+// Mescle estas secoes na policy existente da sua tailnet. Troque o IP de exemplo
+// pelo valor retornado por `tailscale ip -4`. Nao apague regras que voce ja usa.
+{
+  "tagOwners": {
+    "tag:northflank": [],
+  },
+
+  "hosts": {
+    "tcglooker-home-proxy": "100.101.102.103",
+  },
+
+  "grants": [
+    {
+      "src": ["tag:northflank"],
+      "dst": ["tcglooker-home-proxy"],
+      "ip": ["tcp:3128"],
+    },
+  ],
+}
+
