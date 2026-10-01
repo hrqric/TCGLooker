@@ -23,6 +23,10 @@ RUN dotnet publish "TCGLooker.Worker/TCGLooker.Worker.csproj" \
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS final
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV DOTNET_ENVIRONMENT=Production \
     Scraping__CooldownStatePath=/tmp/tcglooker/scraping-cooldowns.json
 
